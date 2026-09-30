@@ -48,6 +48,7 @@ Os testes executam o instalador, o launcher instalado e cinco executáveis simul
 Validação real em 30/09/2026, com credenciais somente no ambiente do processo e diretórios temporários:
 
 - `npm test`, `node --check` e `sh -n`: verdes; instalação temporária e comando `list` conferidos.
+- Publicação: acesso anônimo HTTP 200; clone público novo passou nos testes, verificações de sintaxe, instalação temporária e `list`.
 - Gateway `https://api.quebragalho.dev`: catálogo HTTP 200, com 17 modelos.
 - Messages e Chat Completions: HTTP 200 e resposta `OK` com `gpt-6-luna`.
 - Responses: HTTP 404. O gateway testado não confirmou compatibilidade com Codex; o launcher exige esse protocolo e não o traduz.
