@@ -3,6 +3,8 @@
 Instala `quebragalho` em `~/.local/bin` para abrir diferentes harnesses com modelos de um gateway. Inspirado em `ollama launch`, sem copiar seu código. Requer macOS/Linux, Node.js 22+ e os harnesses desejados instalados.
 
 ```sh
+git clone https://github.com/nikolasdehor/quebragalho-installer.git
+cd quebragalho-installer
 sh install.sh
 export QUEBRAGALHO_BASE_URL="https://SEU-GATEWAY"
 # Defina QUEBRAGALHO_API_KEY no ambiente com sua chave.
@@ -43,7 +45,18 @@ sh -n install.sh
 
 Os testes executam o instalador, o launcher instalado e cinco executáveis simulados. Mockam a consulta HTTP para não abrir sockets nem usar credenciais reais. Verificam configs, catálogo, argumentos literais, códigos de saída, sinais, limpeza e erros. Não comprovam inferência, streaming ou ferramentas nos serviços reais.
 
-Falta validar URL, chave autorizada e os três protocolos da API do Quebra-galho. Nenhum endereço público de instalação, pacote npm ou release foi publicado.
+Validação real em 30/09/2026, com credenciais somente no ambiente do processo e diretórios temporários:
+
+- `npm test`, `node --check` e `sh -n`: verdes; instalação temporária e comando `list` conferidos.
+- Gateway `https://api.quebragalho.dev`: catálogo HTTP 200, com 17 modelos.
+- Messages e Chat Completions: HTTP 200 e resposta `OK` com `gpt-6-luna`.
+- Responses: HTTP 404. O gateway testado não confirmou compatibilidade com Codex; o launcher exige esse protocolo e não o traduz.
+- Claude Code 2.1.286: `launch` com `gpt-6-luna` respondeu `OK` e saiu com código zero; houve aviso de modelo desconhecido/limites de contexto. Com `claude-opus-5.5`, a tentativa foi encerrada após 150 segundos sem resposta.
+- Codex 0.159.2: `launch` selecionou o provider e modelo corretos, mas saiu com código 1 após HTTP 404 em `/v1/responses`.
+- OpenCode 1.18.31: `launch` com `gpt-6-luna` respondeu `OK` e saiu com código zero.
+- Aider e Pi: integrações verificadas por testes locais com executáveis simulados; binários não testados ao vivo.
+
+O repositório distribui o installer por clone; não há pacote npm ou release. Geração curta não comprova ferramentas, todos os modelos ou todos os recursos de streaming.
 
 Referências: [Ollama](https://docs.ollama.com/integrations/claude-code), [Claude Code](https://code.claude.com/docs/en/model-config#add-a-custom-model-option), [Codex](https://learn.chatgpt.com/docs/config-file/config-advanced), [OpenCode](https://opencode.ai/docs/providers/#custom-provider), [Aider](https://aider.chat/docs/llms/openai-compat.html), [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/custom-provider.md).
 
