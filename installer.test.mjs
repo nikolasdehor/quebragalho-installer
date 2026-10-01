@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, symlink, readlink, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -45,6 +45,13 @@ test('installer and installed launch preserve arguments, environment and failure
     const original = await readFile(installed, 'utf8');
     assert.equal((await run('sh', ['install.sh'], env)).code, 1);
     assert.equal(await readFile(installed, 'utf8'), original);
+    await rm(installed);
+    const missing = join(dir, 'missing');
+    await symlink(missing, installed);
+    assert.equal((await run('sh', ['install.sh'], env)).code, 1);
+    assert.equal(await readlink(installed), missing);
+    await rm(installed);
+    assert.equal((await run('sh', ['install.sh'], env)).code, 0);
     assert.equal((await run(installed, ['--help'], env)).code, 0);
     assert.deepEqual((await run(installed, ['list'], env)).output.trim().split('\n'), ['claude', 'codex', 'opencode', 'aider', 'pi']);
     const result = await run(installed, ['launch', 'claude', '--model', 'model-b', '--', '-p', 'hello world; $(echo nope)'], env);
@@ -132,4 +139,94 @@ test('installer and installed launch preserve arguments, environment and failure
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('Claude setup persists native picker, preserves settings and keeps keys out of files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'quebragalho-setup-test-'));
+  try {
+    const settings = join(dir, 'settings.json');
+    const original = JSON.stringify({ hooks: { Stop: [] }, permissions: { deny: ['Read(private)'] },
+      env: { KEEP: 'yes', ANTHROPIC_AUTH_TOKEN: 'old-token', CLAUDE_CODE_USE_BEDROCK: '1' } });
+    await writeFile(settings, original);
+    const preload = join(dir, 'setup-transport.mjs');
+    await writeFile(preload, `
+      import childProcess from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      import assert from 'node:assert/strict';
+      import { writeFileSync } from 'node:fs';
+      let stored = false;
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      childProcess.execFileSync = (command, args, options) => {
+        if (command === 'claude') return process.env.OLD_CLAUDE ? '2.1.100' : '2.1.286';
+        assert.equal(command, '/usr/bin/security');
+        assert.ok(!args.join(' ').includes('test-secret'));
+        if (process.env.KEYCHAIN_FAIL) throw new Error('test-secret');
+        if (args[0] === '-i') {
+          assert.ok(options.input.includes(Buffer.from('test-secret').toString('hex')));
+          assert.ok(!options.input.includes(' -U '));
+          stored = true;
+          writeFileSync(process.env.KEYCHAIN_CAPTURE, options.input.split(' -X ')[0]);
+          if (process.env.CONCURRENT_SETTINGS) writeFileSync(process.env.SETTINGS_PATH, '{"concurrent":true}');
+          return '';
+        }
+        if (!stored) throw new Error('Item not found');
+        return 'test-secret\\n';
+      };
+      syncBuiltinESMExports();
+      globalThis.fetch = async (url, options) => {
+        assert.equal(url, 'https://gateway.example/v1/models');
+        assert.equal(options.headers.Authorization, 'Bearer test-secret');
+        return new Response(JSON.stringify({data:[{id:'model-a'},{id:'gpt-6-luna'}]}),
+          {status: process.env.BAD_CATALOG ? 401 : 200});
+      };
+    `);
+    const env = { CLAUDE_CONFIG_DIR: dir, QUEBRAGALHO_BASE_URL: 'https://gateway.example',
+      QUEBRAGALHO_API_KEY: 'test-secret', NODE_OPTIONS: `--import=${preload}`, KEYCHAIN_CAPTURE: join(dir, 'keychain-capture'), SETTINGS_PATH: settings };
+    const setup = () => run('node', ['quebragalho.mjs', 'setup', 'claude'], env);
+    const result = await setup();
+    assert.equal(result.code, 0, result.output);
+    assert.ok(!result.output.includes('test-secret'));
+    const configured = JSON.parse(await readFile(settings, 'utf8'));
+    assert.deepEqual(configured.hooks, { Stop: [] });
+    assert.deepEqual(configured.permissions, { deny: ['Read(private)'] });
+    assert.equal(configured.env.KEEP, 'yes');
+    assert.equal(configured.env.ANTHROPIC_BASE_URL, 'https://gateway.example');
+    assert.equal(configured.env.ANTHROPIC_API_KEY, '');
+    assert.equal(configured.env.ANTHROPIC_AUTH_TOKEN, '');
+    assert.equal(configured.env.CLAUDE_CODE_USE_BEDROCK, '0');
+    assert.equal(configured.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'gpt-6-luna');
+    assert.equal(configured.env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'gpt-6-luna');
+    assert.equal(configured.model, 'gpt-6-luna');
+    assert.deepEqual(configured.modelPicker.options.map(row => row.model), ['model-a', 'gpt-6-luna']);
+    assert.equal(configured.modelPicker.replaceBuiltInOptions, true);
+    assert.match(configured.apiKeyHelper, /^\/usr\/bin\/security find-generic-password /);
+    assert.ok(!(await readFile(settings, 'utf8')).includes('test-secret'));
+    assert.equal((await stat(settings)).mode & 0o777, 0o600);
+    const backups = (await readdir(dir)).filter(name => name.startsWith('settings.json.quebragalho-backup-'));
+    assert.equal(await readFile(join(dir, backups[0]), 'utf8'), original);
+    const firstAccount = await readFile(env.KEYCHAIN_CAPTURE, 'utf8');
+    configured.model = 'model-a';
+    await writeFile(settings, JSON.stringify(configured));
+    assert.equal((await setup()).code, 0);
+    assert.equal(JSON.parse(await readFile(settings, 'utf8')).model, 'model-a');
+    assert.equal(await readFile(env.KEYCHAIN_CAPTURE, 'utf8'), firstAccount);
+    for (const overrides of [{ KEYCHAIN_FAIL: '1' }, { BAD_CATALOG: '1' }, { OLD_CLAUDE: '1' }]) {
+      const before = await readFile(settings, 'utf8');
+      const failure = await run('node', ['quebragalho.mjs', 'setup', 'claude'], { ...env, ...overrides });
+      assert.equal(failure.code, 1);
+      assert.ok(!failure.output.includes('test-secret'));
+      assert.equal(await readFile(settings, 'utf8'), before);
+    }
+    const concurrent = await run('node', ['quebragalho.mjs', 'setup', 'claude'], { ...env, CONCURRENT_SETTINGS: '1' });
+    assert.equal(concurrent.code, 1);
+    assert.equal(await readFile(settings, 'utf8'), '{"concurrent":true}');
+    const otherDir = join(dir, 'other-profile');
+    const other = await run('node', ['quebragalho.mjs', 'setup', 'claude'], { ...env, CLAUDE_CONFIG_DIR: otherDir });
+    assert.equal(other.code, 0, other.output);
+    assert.notEqual(JSON.parse(await readFile(join(otherDir, 'settings.json'), 'utf8')).apiKeyHelper, configured.apiKeyHelper);
+    assert.notEqual(await readFile(env.KEYCHAIN_CAPTURE, 'utf8'), firstAccount);
+    await writeFile(settings, 'invalid JSON');
+    assert.equal((await setup()).code, 1);
+    assert.equal(await readFile(settings, 'utf8'), 'invalid JSON');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
