@@ -8,6 +8,7 @@ import { Writable } from 'node:stream';
 import { createHash } from 'node:crypto';
 
 const harnesses = ['claude', 'codex', 'opencode', 'aider', 'pi'];
+const claudeProfile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'quebragalho', 'claude');
 
 async function gatewayCatalog(rawUrl, key) {
   if (!rawUrl || !key) throw new Error('Configure QUEBRAGALHO_BASE_URL e QUEBRAGALHO_API_KEY.');
@@ -42,13 +43,13 @@ async function setupClaude() {
   try { version = execFileSync('claude', ['--version'], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] }).match(/(\d+)\.(\d+)\.(\d+)/)?.slice(1).map(Number); }
   catch { throw new Error('Instale Claude Code 2.1.242+ primeiro.'); }
   if (!version || version[0] < 2 || (version[0] === 2 && version[1] === 0) || (version[0] === 2 && version[1] === 1 && version[2] < 242)) throw new Error('Atualize Claude Code para 2.1.242+ para usar /model.');
-  const directory = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  const directory = claudeProfile();
   const path = join(directory, 'settings.json');
   const readSettings = () => readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
   const original = await readSettings();
   const settings = JSON.parse(original ?? '{}');
   if (!settings || typeof settings !== 'object' || Array.isArray(settings) || (settings.env !== undefined && (!settings.env || typeof settings.env !== 'object' || Array.isArray(settings.env)))) throw new Error('settings.json deve conter um objeto JSON válido.');
-  console.log('Configuração única: Claude usará este gateway. Seus hooks e permissões serão preservados.');
+  console.log('Configuração única do perfil QG. O Claude oficial não será alterado.');
   const rawUrl = process.env.QUEBRAGALHO_BASE_URL || (await ask('URL do gateway [https://api.quebragalho.dev]: ')) || 'https://api.quebragalho.dev';
   const key = process.env.QUEBRAGALHO_API_KEY || await ask('Chave da API (oculta): ', true);
   if (!key || /[\s\x00-\x1f\x7f]/.test(key)) throw new Error('Chave vazia ou com caracteres inválidos.');
@@ -81,7 +82,7 @@ async function setupClaude() {
     if (original !== undefined) await writeFile(`${path}.quebragalho-backup-${Date.now()}`, original, { mode: 0o600, flag: 'wx' });
     await rename(join(temporary, 'settings.json'), path);
   } finally { await rm(temporary, { recursive: true, force: true }); }
-  console.log(`Pronto: ${models.length} modelos configurados. Abra claude normalmente e escolha em /model.\nConfiguração: ${path}\nChave guardada no Chaves do macOS.${original === undefined ? '' : ' Backup das configurações anteriores preservado.'}`);
+  console.log(`Pronto: ${models.length} modelos configurados. Abra quebragalho claude e escolha em /model. Claude normal continua oficial.\nConfiguração: ${path}\nChave guardada no Chaves do macOS.${original === undefined ? '' : ' Backup das configurações anteriores preservado.'}`);
 }
 
 async function configuration(harness, base, model, models) {
@@ -91,6 +92,8 @@ async function configuration(harness, base, model, models) {
   let temporary;
   switch (harness) {
     case 'claude':
+      temporary = await mkdtemp(join(tmpdir(), 'quebragalho-claude-'));
+      env.CLAUDE_CONFIG_DIR = temporary;
       Object.assign(env, { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key,
         ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: model, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1' });
       for (const name of ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) delete env[name];
@@ -137,10 +140,20 @@ async function main() {
   const args = process.argv.slice(2);
   const helpArgs = args.includes('--') ? args.slice(0, args.indexOf('--')) : args;
   if (!args.length || helpArgs.includes('--help')) {
-    console.log(`Uso: quebragalho setup claude (configura uma vez; depois use claude e /model)\nquebragalho launch [${harnesses.join('|')}] [--model ID] [-- argumentos do harness]\nquebragalho list\nPara launch, configure QUEBRAGALHO_BASE_URL e QUEBRAGALHO_API_KEY no ambiente.`);
+    console.log(`Uso: quebragalho setup claude (perfil isolado; depois use quebragalho claude)\nquebragalho launch [${harnesses.join('|')}] [--model ID] [-- argumentos do harness]\nquebragalho list\nPara launch, configure QUEBRAGALHO_BASE_URL e QUEBRAGALHO_API_KEY no ambiente.`);
     return;
   }
   if (args[0] === 'list' && args.length === 1) { console.log(harnesses.join('\n')); return; }
+  if (args[0] === 'claude') {
+    const directory = claudeProfile();
+    try { await readFile(join(directory, 'settings.json')); }
+    catch { throw new Error('Configure o perfil QG uma vez: quebragalho setup claude.'); }
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: directory };
+    // Settings in the QG profile supply credentials and models, without inherited provider overrides.
+    for (const name of Object.keys(env)) if (name.startsWith('ANTHROPIC_') || name.startsWith('CLAUDE_CODE_USE_')) delete env[name];
+    await execute('claude', args.slice(1), env);
+    return;
+  }
   if (args[0] === 'setup') {
     if (args.length !== 2 || args[1] !== 'claude') throw new Error('Use quebragalho setup claude.');
     await setupClaude();
@@ -180,11 +193,15 @@ async function main() {
   model ??= models[0];
   if (!models.includes(model)) throw new Error('Modelo não encontrado no catálogo.');
   const { env, args: launchArgs, temporary } = await configuration(harness, base, model, models);
+  await execute(harness, [...launchArgs, ...forwarded], env, temporary);
+}
+
+async function execute(harness, args, env, temporary) {
   // Pass credentials through the environment, never command-line arguments.
   let result;
   try {
     result = await new Promise((resolve, reject) => {
-      const child = spawn(harness, [...launchArgs, ...forwarded], { env, stdio: 'inherit', shell: false });
+      const child = spawn(harness, args, { env, stdio: 'inherit', shell: false });
       const forwardInt = () => child.kill('SIGINT');
       const forwardTerm = () => child.kill('SIGTERM');
       process.on('SIGINT', forwardInt);

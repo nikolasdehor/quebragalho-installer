@@ -2,7 +2,9 @@
 
 Instala `quebragalho` em `~/.local/bin` para abrir diferentes harnesses com modelos de um gateway. Inspirado em `ollama launch`, sem copiar seu código. Requer macOS/Linux, Node.js 22+ e os harnesses desejados instalados.
 
-## Claude: configurar uma vez
+## Claude: oficial e QG separados
+
+O installer **não modifica `~/.claude/settings.json`, credenciais, aliases ou modelos do Claude oficial**. O QG usa um perfil próprio. Adicionar linhas ao mesmo `/model` não troca a conexão de API por modelo; por isso o installer não mistura modelos oficiais e QG sob um único gateway.
 
 No macOS, com Claude Code 2.1.242+ instalado:
 
@@ -12,13 +14,18 @@ cd quebragalho-installer
 sh install.sh
 ```
 
-O instalador oferece configurar o Claude. Aceite, informe a URL do gateway (Enter usa Quebra-galho) e cole a chave no campo oculto. Depois, basta abrir **`claude`** e escolher o modelo em **`/model`**. Não precisa de exports nem de abrir pelo launcher; o Claude salva a escolha para novas sessões.
+O instalador oferece configurar um **perfil separado**. Informe a URL (Enter usa Quebra-galho) e cole a chave no campo oculto. Depois:
 
-Se já instalou o launcher, execute `quebragalho setup claude` uma vez. Reexecutar esse comando atualiza o catálogo. A URL aceita a raiz ou o sufixo `/v1`.
+```sh
+claude               # Claude oficial, com sua configuração original
+quebragalho claude   # Perfil QG; escolha os modelos QG em /model
+```
 
-O setup consulta o catálogo antes de alterar configurações, guarda a chave no Chaves do macOS e configura `apiKeyHelper` e a lista nativa `modelPicker` em `~/.claude/settings.json` (ou `CLAUDE_CONFIG_DIR`). Preserva hooks, permissões e campos não relacionados; mantém credenciais anteriores em entradas distintas para que a restauração do backup funcione; faz backup privado `settings.json.quebragalho-backup-*` antes da gravação atômica. A conexão padrão do Claude passa a usar o gateway, com `gpt-6-luna` como modelo inicial se disponível; uma escolha anterior presente no catálogo é mantida. Aliases e modelo auxiliar usam o modelo inicial para evitar IDs indisponíveis no gateway. Modelos listados não são garantia de suporte a todos os recursos. Configurações gerenciadas e de projeto podem prevalecer.
+Não precisa repetir exports. No perfil QG, `/model` salva a escolha somente nesse perfil. Para configurar ou atualizar o catálogo: `quebragalho setup claude`.
 
-Para voltar à configuração anterior, feche o Claude e restaure o backup. A chave continua no Chaves até você removê-la pelo app Acesso às Chaves (serviço `dev.quebragalho.claude`). O setup permanente é exclusivo do macOS; `launch` continua funcionando em macOS/Linux.
+O setup grava apenas `~/.config/quebragalho/claude/settings.json` (ou `$XDG_CONFIG_HOME/quebragalho/claude/settings.json`). A chave fica no Chaves do macOS; o perfil usa `apiKeyHelper`. Perfis e credenciais anteriores são preservados por backup privado e gravação atômica. O perfil QG não copia hooks, plugins ou credenciais pessoais do Claude oficial. Políticas gerenciadas e configurações de projeto continuam podendo interferir. O setup é exclusivo do macOS; `launch` funciona em macOS/Linux.
+
+Se usou o setup antigo, que editava o Claude oficial, restaure o backup `~/.claude/settings.json.quebragalho-backup-*` antes de usar a nova versão. O setup novo não migra nem sobrescreve sua configuração oficial automaticamente.
 
 ## Outros harnesses e uso por sessão
 
@@ -45,7 +52,7 @@ quebragalho launch codex --model ID -- exec "Explique este projeto"
 
 O launcher não traduz protocolos. Catálogo disponível não comprova suporte a ferramentas ou a cada API; validar isso no gateway. Para Pi, os limites são conservadores (32K contexto, 4096 saída), entrada só texto e sem raciocínio declarado. Custos zero são placeholders do SDK, não indicação de gratuidade; não use a estimativa do Pi para faturamento. Substituir por metadados oficiais antes de distribuir em produção.
 
-`launch` não grava chaves nem edita configs globais dos harnesses ou arquivos do shell. `setup claude` modifica a configuração do usuário e guarda a chave no Chaves conforme descrito acima. Configs existentes continuam carregadas e podem interferir, especialmente políticas gerenciadas; confira o provider e modelo na sessão. OpenCode preserva campos existentes no JSON inline e acrescenta o provider. A extensão privada temporária do Pi é removida em saída normal, falha de execução e SIGINT/SIGTERM; SIGKILL ou queda da máquina podem deixar o arquivo, que não contém chave.
+`launch` não grava chaves nem edita configs globais dos harnesses ou arquivos do shell. `setup claude` modifica apenas o perfil QG e guarda a chave no Chaves conforme descrito acima. `launch claude` usa um perfil temporário para não gravar escolhas no Claude oficial. Configs existentes continuam carregadas e podem interferir, especialmente políticas gerenciadas; confira o provider e modelo na sessão. OpenCode preserva campos existentes no JSON inline e acrescenta o provider. A extensão privada temporária do Pi é removida em saída normal, falha de execução e SIGINT/SIGTERM; SIGKILL ou queda da máquina podem deixar o arquivo, que não contém chave.
 
 O tráfego da sessão vai para o gateway selecionado. O instalador não usa sudo, preserva executáveis existentes e não baixa harnesses automaticamente. `QUEBRAGALHO_BIN_DIR` escolhe outro destino; se ele não estiver no PATH, o instalador avisa.
 
@@ -57,7 +64,7 @@ node --check quebragalho.mjs
 sh -n install.sh
 ```
 
-Os testes executam o instalador, o launcher instalado e cinco executáveis simulados. Mockam a consulta HTTP para não abrir sockets nem usar credenciais reais. Verificam configs, catálogo, argumentos literais, códigos de saída, sinais, limpeza e erros. O setup usa um Chaves simulado para verificar configuração permanente, preservação de campos, backup privado, modelo padrão, reconfiguração e falhas sem vazamento de chave. Não comprovam inferência, streaming ou ferramentas nos serviços reais.
+Os testes executam o instalador, o launcher instalado e cinco executáveis simulados. Mockam a consulta HTTP para não abrir sockets nem usar credenciais reais. Verificam configs, catálogo, argumentos literais, códigos de saída, sinais, limpeza e erros. O setup usa um Chaves simulado para verificar perfil separado, atalho sem exports, preservação byte a byte das configurações oficiais, backup privado, modelo padrão, reconfiguração e falhas sem vazamento de chave. Os cinco launches também preservam arquivos oficiais de configuração na suíte simulada. Não comprovam inferência, streaming ou ferramentas nos serviços reais.
 
 Validação real em 30/09/2026, sem expor credenciais no repositório ou nos logs:
 
@@ -67,11 +74,13 @@ Validação real em 30/09/2026, sem expor credenciais no repositório ou nos log
 - Messages e Chat Completions: HTTP 200 e resposta `OK` com `gpt-6-luna`.
 - Validação adicional com `gpt-6-luna`: streaming SSE com resposta `OK` e encerramento do fluxo; chamada de ferramenta `echo` com argumentos válidos, devolução do resultado e resposta final `OK` nos dois protocolos. Isso verifica a troca de mensagens de ferramenta; não executa comandos nem comprova todos os modelos.
 - Responses: HTTP 404. O gateway testado não confirmou compatibilidade com Codex; o launcher exige esse protocolo e não o traduz.
-- Setup nativo do Claude: assistente de instalação com chave oculta; 17 modelos em `/model`; troca de modelo salva para novas sessões. Claude respondeu `OK` sem exports, `--model` ou launcher. Configuração pessoal aplicada com backup e preservação de hooks/permissões.
+- Setup antigo do Claude (30/09, substituído): redirecionava a conexão e a lista oficiais. Foi removido do perfil pessoal; a versão atual configura somente um perfil QG separado.
 - Claude Code 2.1.286: `launch` com `gpt-6-luna` respondeu `OK` e saiu com código zero; houve aviso de modelo desconhecido/limites de contexto. Com `claude-opus-5.5`, a tentativa foi encerrada após 150 segundos sem resposta.
 - Codex 0.159.2: `launch` selecionou o provider e modelo corretos, mas saiu com código 1 após HTTP 404 em `/v1/responses`.
 - OpenCode 1.18.31: `launch` com `gpt-6-luna` respondeu `OK` e saiu com código zero.
 - Aider e Pi: integrações verificadas por testes locais com executáveis simulados; binários não testados ao vivo.
+
+Validação da correção em 01/10/2026: `quebragalho claude -p` respondeu `OK` em perfil temporário, sem exports de gateway. O catálogo tinha 17 modelos; `~/.claude/settings.json` permaneceu byte a byte intacto, nenhuma instalação pessoal foi refeita e a credencial temporária foi removida. A suíte local passou com preservação de configurações dos cinco harnesses e do provider existente no OpenCode.
 
 O repositório distribui o installer por clone; não há pacote npm ou release. As verificações acima não comprovam todos os modelos ou todos os recursos de streaming. O installer também preserva links simbólicos com destino inexistente, com teste de regressão local.
 

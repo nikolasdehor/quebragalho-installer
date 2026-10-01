@@ -17,14 +17,14 @@ case ":$PATH:" in
   *) echo "Adicione $target ao PATH do seu terminal." ;;
 esac
 if [ -t 0 ] && [ "$(uname -s)" = Darwin ]; then
-  printf 'Configurar o Quebra-galho no Claude agora? [S/n] '
+  printf 'Configurar um perfil separado do Quebra-galho para Claude? [S/n] '
   IFS= read -r choice || exit 0
   case "$choice" in
     ''|s|S|y|Y) "$target/quebragalho" setup claude ;;
     *) echo 'Quando quiser: quebragalho setup claude' ;;
   esac
 elif [ "$(uname -s)" = Darwin ]; then
-  echo 'Para configurar uma vez no Claude: quebragalho setup claude'
+  echo 'Para configurar o perfil QG separado: quebragalho setup claude'
 else
   echo 'Próximo passo: quebragalho launch (ou quebragalho list)'
 fi

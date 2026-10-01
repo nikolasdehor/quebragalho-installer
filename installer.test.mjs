@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm, symlink, readlink, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, symlink, readlink, readdir, stat, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -33,10 +33,16 @@ test('installer and installed launch preserve arguments, environment and failure
           {status: Number(process.env.MOCK_STATUS || 200)});
       };
     `);
+    const officialFiles = ['.claude/settings.json', '.codex/config.toml', '.config/opencode/opencode.json', '.aider.conf.yml', '.pi/agent/models.json'];
+    for (const file of officialFiles) {
+      const path = join(dir, 'home', file);
+      await mkdir(join(path, '..'), { recursive: true });
+      await writeFile(path, 'official-provider-and-model');
+    }
     const capture = join(dir, 'capture.json');
-    const fake = `#!/usr/bin/env node\nconst fs = require('node:fs'); const args=process.argv.slice(2); const extension=args.includes('--extension') ? args[args.indexOf('--extension')+1] : undefined; fs.writeFileSync(process.env.CAPTURE, JSON.stringify({args,base:process.env.ANTHROPIC_BASE_URL,token:process.env.ANTHROPIC_AUTH_TOKEN,api:process.env.ANTHROPIC_API_KEY,discovery:process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY,bedrock:process.env.CLAUDE_CODE_USE_BEDROCK,openaiBase:process.env.OPENAI_API_BASE,openaiKey:process.env.OPENAI_API_KEY,opencode:process.env.OPENCODE_CONFIG_CONTENT,extension:extension ? fs.readFileSync(extension,'utf8') : undefined}));if(process.env.MOCK_SIGNAL) process.kill(process.pid,'SIGTERM'); else if(process.env.MOCK_WAIT) setInterval(()=>{},1000); else process.exit(7);\n`;
+    const fake = `#!/usr/bin/env node\nconst fs = require('node:fs'); const args=process.argv.slice(2); const extension=args.includes('--extension') ? args[args.indexOf('--extension')+1] : undefined; fs.writeFileSync(process.env.CAPTURE, JSON.stringify({args,configDir:process.env.CLAUDE_CONFIG_DIR,base:process.env.ANTHROPIC_BASE_URL,token:process.env.ANTHROPIC_AUTH_TOKEN,api:process.env.ANTHROPIC_API_KEY,discovery:process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY,bedrock:process.env.CLAUDE_CODE_USE_BEDROCK,openaiBase:process.env.OPENAI_API_BASE,openaiKey:process.env.OPENAI_API_KEY,opencode:process.env.OPENCODE_CONFIG_CONTENT,extension:extension ? fs.readFileSync(extension,'utf8') : undefined}));if(process.env.MOCK_SIGNAL) process.kill(process.pid,'SIGTERM'); else if(process.env.MOCK_WAIT) setInterval(()=>{},1000); else process.exit(7);\n`;
     for (const name of ['claude', 'codex', 'opencode', 'aider', 'pi']) await writeFile(join(dir, name), fake, { mode: 0o755 });
-    const env = { QUEBRAGALHO_BIN_DIR: dir, PATH: `${dir}:${process.env.PATH}`, CAPTURE: capture,
+    const env = { HOME: join(dir, 'home'), QUEBRAGALHO_BIN_DIR: dir, PATH: `${dir}:${process.env.PATH}`, CAPTURE: capture,
       NODE_OPTIONS: `--import=${preload}`, QUEBRAGALHO_BASE_URL: 'https://gateway.example', QUEBRAGALHO_API_KEY: 'test-secret', CLAUDE_CODE_USE_BEDROCK: '1',
       ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: '',
       CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '', OPENAI_API_BASE: '', OPENAI_API_KEY: '', OPENCODE_CONFIG_CONTENT: '' };
@@ -63,10 +69,13 @@ test('installer and installed launch preserve arguments, environment and failure
     assert.equal(claude.api, '');
     assert.equal(claude.discovery, '1');
     assert.equal(claude.bedrock, undefined);
+    assert.notEqual(claude.configDir, join(dir, 'home', '.claude'));
+    await assert.rejects(stat(claude.configDir), { code: 'ENOENT' });
     assert.equal((await run(installed, ['launch', 'claude', '--model', 'model-b', '--', '--help'], env)).code, 7);
     assert.deepEqual(JSON.parse(await readFile(capture, 'utf8')).args, ['--model', 'model-b', '--help']);
     for (const harness of ['codex', 'opencode', 'aider', 'pi']) {
-      const outcome = await run(installed, ['launch', harness, '--model', 'model-b', '--', '--help'], env);
+      const launchEnv = harness === 'opencode' ? { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { official: { name: 'Official provider' } }, theme: 'existing' }) } : env;
+      const outcome = await run(installed, ['launch', harness, '--model', 'model-b', '--', '--help'], launchEnv);
       assert.equal(outcome.code, 7, outcome.output);
       const captured = JSON.parse(await readFile(capture, 'utf8'));
       assert.equal(captured.args.at(-1), '--help');
@@ -80,6 +89,8 @@ test('installer and installed launch preserve arguments, environment and failure
       if (harness === 'opencode') {
         const config = JSON.parse(captured.opencode);
         assert.equal(config.model, 'quebragalho/model-b');
+        assert.deepEqual(config.provider.official, { name: 'Official provider' });
+        assert.equal(config.theme, 'existing');
         assert.deepEqual(Object.keys(config.provider.quebragalho.models), ['model-a', 'model-b']);
         assert.equal(config.provider.quebragalho.options.apiKey, '{env:QUEBRAGALHO_API_KEY}');
       }
@@ -136,15 +147,22 @@ test('installer and installed launch preserve arguments, environment and failure
       assert.ok(!failure.output.includes('test-secret'));
     }
     assert.equal((await run(installed, ['launch', 'claude', '--model', 'model-a'], { ...env, MOCK_STATUS: '401' })).code, 1);
+    for (const file of officialFiles) assert.equal(await readFile(join(dir, 'home', file), 'utf8'), 'official-provider-and-model');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test('Claude setup persists native picker, preserves settings and keeps keys out of files', async () => {
+test('Claude setup uses an isolated profile and leaves official models and providers intact', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'quebragalho-setup-test-'));
   try {
-    const settings = join(dir, 'settings.json');
+    const profile = join(dir, 'quebragalho', 'claude');
+    await mkdir(profile, { recursive: true });
+    const settings = join(profile, 'settings.json');
+    const official = join(dir, 'official');
+    await mkdir(official);
+    const officialSettings = join(official, 'settings.json');
+    await writeFile(officialSettings, '{"model":"sonnet","env":{"KEEP":"official"}}');
     const original = JSON.stringify({ hooks: { Stop: [] }, permissions: { deny: ['Read(private)'] },
       env: { KEEP: 'yes', ANTHROPIC_AUTH_TOKEN: 'old-token', CLAUDE_CODE_USE_BEDROCK: '1' } });
     await writeFile(settings, original);
@@ -180,7 +198,7 @@ test('Claude setup persists native picker, preserves settings and keeps keys out
           {status: process.env.BAD_CATALOG ? 401 : 200});
       };
     `);
-    const env = { CLAUDE_CONFIG_DIR: dir, QUEBRAGALHO_BASE_URL: 'https://gateway.example',
+    const env = { CLAUDE_CONFIG_DIR: official, XDG_CONFIG_HOME: dir, QUEBRAGALHO_BASE_URL: 'https://gateway.example',
       QUEBRAGALHO_API_KEY: 'test-secret', NODE_OPTIONS: `--import=${preload}`, KEYCHAIN_CAPTURE: join(dir, 'keychain-capture'), SETTINGS_PATH: settings };
     const setup = () => run('node', ['quebragalho.mjs', 'setup', 'claude'], env);
     const result = await setup();
@@ -202,9 +220,20 @@ test('Claude setup persists native picker, preserves settings and keeps keys out
     assert.match(configured.apiKeyHelper, /^\/usr\/bin\/security find-generic-password /);
     assert.ok(!(await readFile(settings, 'utf8')).includes('test-secret'));
     assert.equal((await stat(settings)).mode & 0o777, 0o600);
-    const backups = (await readdir(dir)).filter(name => name.startsWith('settings.json.quebragalho-backup-'));
-    assert.equal(await readFile(join(dir, backups[0]), 'utf8'), original);
+    const backups = (await readdir(profile)).filter(name => name.startsWith('settings.json.quebragalho-backup-'));
+    assert.equal(await readFile(join(profile, backups[0]), 'utf8'), original);
     const firstAccount = await readFile(env.KEYCHAIN_CAPTURE, 'utf8');
+    const fakeClaude = join(dir, 'claude');
+    const shortcutCapture = join(dir, 'shortcut-capture.json');
+    await writeFile(fakeClaude, `#!/usr/bin/env node
+require('node:fs').writeFileSync(process.env.SHORTCUT_CAPTURE, JSON.stringify({configDir:process.env.CLAUDE_CONFIG_DIR,api:process.env.ANTHROPIC_API_KEY,args:process.argv.slice(2)}));
+`, { mode: 0o755 });
+    const shortcut = await run('node', ['quebragalho.mjs', 'claude', '-p', 'test'], {
+      ...env, NODE_OPTIONS: '', PATH: `${dir}:${process.env.PATH}`, SHORTCUT_CAPTURE: shortcutCapture, ANTHROPIC_API_KEY: 'official-token',
+    });
+    assert.equal(shortcut.code, 0, shortcut.output);
+    assert.deepEqual(JSON.parse(await readFile(shortcutCapture, 'utf8')), { configDir: profile, args: ['-p', 'test'] });
+    assert.equal(await readFile(officialSettings, 'utf8'), '{"model":"sonnet","env":{"KEEP":"official"}}');
     configured.model = 'model-a';
     await writeFile(settings, JSON.stringify(configured));
     assert.equal((await setup()).code, 0);
@@ -221,10 +250,11 @@ test('Claude setup persists native picker, preserves settings and keeps keys out
     assert.equal(concurrent.code, 1);
     assert.equal(await readFile(settings, 'utf8'), '{"concurrent":true}');
     const otherDir = join(dir, 'other-profile');
-    const other = await run('node', ['quebragalho.mjs', 'setup', 'claude'], { ...env, CLAUDE_CONFIG_DIR: otherDir });
+    const other = await run('node', ['quebragalho.mjs', 'setup', 'claude'], { ...env, XDG_CONFIG_HOME: otherDir });
     assert.equal(other.code, 0, other.output);
-    assert.notEqual(JSON.parse(await readFile(join(otherDir, 'settings.json'), 'utf8')).apiKeyHelper, configured.apiKeyHelper);
+    assert.notEqual(JSON.parse(await readFile(join(otherDir, 'quebragalho', 'claude', 'settings.json'), 'utf8')).apiKeyHelper, configured.apiKeyHelper);
     assert.notEqual(await readFile(env.KEYCHAIN_CAPTURE, 'utf8'), firstAccount);
+    assert.equal(await readFile(officialSettings, 'utf8'), '{"model":"sonnet","env":{"KEEP":"official"}}');
     await writeFile(settings, 'invalid JSON');
     assert.equal((await setup()).code, 1);
     assert.equal(await readFile(settings, 'utf8'), 'invalid JSON');
