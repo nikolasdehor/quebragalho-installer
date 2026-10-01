@@ -40,10 +40,10 @@ test('installer and installed launch preserve arguments, environment and failure
       await writeFile(path, 'official-provider-and-model');
     }
     const capture = join(dir, 'capture.json');
-    const fake = `#!/usr/bin/env node\nconst fs = require('node:fs'); const args=process.argv.slice(2); const extension=args.includes('--extension') ? args[args.indexOf('--extension')+1] : undefined; fs.writeFileSync(process.env.CAPTURE, JSON.stringify({args,configDir:process.env.CLAUDE_CONFIG_DIR,base:process.env.ANTHROPIC_BASE_URL,token:process.env.ANTHROPIC_AUTH_TOKEN,api:process.env.ANTHROPIC_API_KEY,discovery:process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY,bedrock:process.env.CLAUDE_CODE_USE_BEDROCK,openaiBase:process.env.OPENAI_API_BASE,openaiKey:process.env.OPENAI_API_KEY,opencode:process.env.OPENCODE_CONFIG_CONTENT,extension:extension ? fs.readFileSync(extension,'utf8') : undefined}));if(process.env.MOCK_SIGNAL) process.kill(process.pid,'SIGTERM'); else if(process.env.MOCK_WAIT) setInterval(()=>{},1000); else process.exit(7);\n`;
+    const fake = `#!/usr/bin/env node\nconst fs = require('node:fs'); const args=process.argv.slice(2); const extension=args.includes('--extension') ? args[args.indexOf('--extension')+1] : undefined; fs.writeFileSync(process.env.CAPTURE, JSON.stringify({args,configDir:process.env.CLAUDE_CONFIG_DIR,home:process.env.HOME,codexHome:process.env.CODEX_HOME,opencodeDir:process.env.OPENCODE_CONFIG_DIR,opencodeFile:process.env.OPENCODE_CONFIG,piDir:process.env.PI_CODING_AGENT_DIR,xdgConfig:process.env.XDG_CONFIG_HOME,xdgData:process.env.XDG_DATA_HOME,base:process.env.ANTHROPIC_BASE_URL,token:process.env.ANTHROPIC_AUTH_TOKEN,api:process.env.ANTHROPIC_API_KEY,discovery:process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY,bedrock:process.env.CLAUDE_CODE_USE_BEDROCK,openaiBase:process.env.OPENAI_API_BASE,openaiKey:process.env.OPENAI_API_KEY,opencode:process.env.OPENCODE_CONFIG_CONTENT,extension:extension ? fs.readFileSync(extension,'utf8') : undefined}));if(process.env.MOCK_SIGNAL) process.kill(process.pid,'SIGTERM'); else if(process.env.MOCK_WAIT) setInterval(()=>{},1000); else process.exit(7);\n`;
     for (const name of ['claude', 'codex', 'opencode', 'aider', 'pi']) await writeFile(join(dir, name), fake, { mode: 0o755 });
     const env = { HOME: join(dir, 'home'), QUEBRAGALHO_BIN_DIR: dir, PATH: `${dir}:${process.env.PATH}`, CAPTURE: capture,
-      NODE_OPTIONS: `--import=${preload}`, QUEBRAGALHO_BASE_URL: 'https://gateway.example', QUEBRAGALHO_API_KEY: 'test-secret', CLAUDE_CODE_USE_BEDROCK: '1',
+      NODE_OPTIONS: `--import=${preload}`, QUEBRAGALHO_BASE_URL: 'https://gateway.example', QUEBRAGALHO_API_KEY: 'test-secret', CLAUDE_CODE_USE_BEDROCK: '1', CODEX_HOME: '/official/codex', OPENCODE_CONFIG_DIR: '/official/opencode', OPENCODE_CONFIG: '/official/opencode.json', PI_CODING_AGENT_DIR: '/official/pi',
       ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: '',
       CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '', OPENAI_API_BASE: '', OPENAI_API_KEY: '', OPENCODE_CONFIG_CONTENT: '' };
     assert.equal((await run('sh', ['install.sh'], env)).code, 0);
@@ -79,14 +79,21 @@ test('installer and installed launch preserve arguments, environment and failure
       assert.equal(outcome.code, 7, outcome.output);
       const captured = JSON.parse(await readFile(capture, 'utf8'));
       assert.equal(captured.args.at(-1), '--help');
+      assert.notEqual(captured.home, env.HOME);
+      assert.ok(captured.xdgConfig.startsWith(captured.home + '/'));
+      assert.ok(captured.xdgData.startsWith(captured.home + '/'));
+      await assert.rejects(stat(captured.home), { code: 'ENOENT' });
       assert.ok(!captured.args.join(' ').includes('test-secret'));
       if (harness === 'codex') {
+        assert.ok(captured.codexHome.startsWith(captured.home + '/'));
         assert.ok(captured.args.includes('model_provider="quebragalho"'));
         assert.ok(captured.args.includes('model_providers.quebragalho.wire_api="responses"'));
         assert.ok(captured.args.includes('model_providers.quebragalho.env_key="QUEBRAGALHO_API_KEY"'));
         assert.ok(captured.args.includes('model_providers.quebragalho.base_url="https://gateway.example/v1"'));
       }
       if (harness === 'opencode') {
+        assert.ok(captured.opencodeDir.startsWith(captured.home + '/'));
+        assert.equal(captured.opencodeFile, undefined);
         const config = JSON.parse(captured.opencode);
         assert.equal(config.model, 'quebragalho/model-b');
         assert.deepEqual(config.provider.official, { name: 'Official provider' });
@@ -97,9 +104,11 @@ test('installer and installed launch preserve arguments, environment and failure
       if (harness === 'aider') {
         assert.equal(captured.openaiBase, 'https://gateway.example/v1');
         assert.equal(captured.openaiKey, 'test-secret');
-        assert.deepEqual(captured.args, ['--model', 'openai/model-b', '--help']);
+        assert.deepEqual(captured.args.slice(0, 2), ['--model', 'openai/model-b']);
+        for (const flag of ['--config', '--env-file', '--input-history-file', '--chat-history-file', '--llm-history-file']) assert.ok(captured.args[captured.args.indexOf(flag) + 1].startsWith(captured.home + '/'));
       }
       if (harness === 'pi') {
+        assert.ok(captured.piDir.startsWith(captured.home + '/'));
         let provider;
         const extension = await import(`data:text/javascript,${encodeURIComponent(captured.extension)}`);
         extension.default({ registerProvider: (name, value) => { assert.equal(name, 'quebragalho'); provider = value; } });

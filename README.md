@@ -42,17 +42,21 @@ quebragalho launch codex --model ID -- exec "Explique este projeto"
 
 `launch` sem nome oferece escolha interativa de harness. O catálogo vem de `GET /v1/models` no formato `{"data":[{"id":"modelo"}]}`. A URL base aceita a raiz ou o sufixo `/v1`. Com vários modelos, o launcher oferece seleção; sem terminal interativo, exige `--model`. Argumentos depois de `--` seguem literalmente para o harness. O código de saída e os sinais de encerramento são preservados.
 
-| Harness | Configuração na sessão | API exigida | Catálogo dentro do harness |
-| --- | --- | --- | --- |
-| Claude Code | Variáveis Anthropic | /v1/messages, SSE e ferramentas | Descoberta nativa em /model nas versões compatíveis |
-| Codex | Provider via -c, chave por ambiente | /v1/responses, SSE e ferramentas | Seleção pelo launcher; não injeta o picker nativo |
-| OpenCode | Provider com catálogo via OPENCODE_CONFIG_CONTENT | /v1/chat/completions, SSE e ferramentas | Modelos em /models |
-| Aider | OPENAI_API_BASE e modelo openai/ID | /v1/chat/completions | Seleção pelo launcher; não injeta o picker nativo |
-| Pi | Extensão temporária com provider e catálogo | /v1/chat/completions, SSE e ferramentas | Modelos em /model |
+| Harness | Isolamento da sessão QG | API exigida |
+| --- | --- | --- |
+| Claude Code | `CLAUDE_CONFIG_DIR` próprio | /v1/messages, SSE e ferramentas |
+| Codex | `CODEX_HOME` próprio, provider por sessão | /v1/responses, SSE e ferramentas |
+| OpenCode | HOME/XDG e `OPENCODE_CONFIG_DIR` próprios; provider inline | /v1/chat/completions, SSE e ferramentas |
+| Aider | Configuração, dotenv e históricos privados | /v1/chat/completions |
+| Pi | `PI_CODING_AGENT_DIR` próprio e extensão privada | /v1/chat/completions, SSE e ferramentas |
+
+Todos os `launch` usam HOME e diretórios XDG temporários, sem carregar ou substituir o estado pessoal dos harnesses. Escolhas de modelo, credenciais e históricos da sessão QG não viram preferências oficiais. Esses diretórios são removidos ao terminar: os históricos QG temporários não ficam disponíveis para retomar a sessão. `quebragalho claude` usa o perfil QG persistente separado já descrito acima.
+
+O diretório do projeto permanece o mesmo: arquivos de trabalho ainda podem ser alterados pelo harness conforme sua tarefa. Configurações de projeto, políticas gerenciadas e flags explicitamente encaminhadas podem interferir ou escolher outros caminhos; o isolamento de perfil não é uma sandbox.
 
 O launcher não traduz protocolos. Catálogo disponível não comprova suporte a ferramentas ou a cada API; validar isso no gateway. Para Pi, os limites são conservadores (32K contexto, 4096 saída), entrada só texto e sem raciocínio declarado. Custos zero são placeholders do SDK, não indicação de gratuidade; não use a estimativa do Pi para faturamento. Substituir por metadados oficiais antes de distribuir em produção.
 
-`launch` não grava chaves nem edita configs globais dos harnesses ou arquivos do shell. `setup claude` modifica apenas o perfil QG e guarda a chave no Chaves conforme descrito acima. `launch claude` usa um perfil temporário para não gravar escolhas no Claude oficial. Configs existentes continuam carregadas e podem interferir, especialmente políticas gerenciadas; confira o provider e modelo na sessão. OpenCode preserva campos existentes no JSON inline e acrescenta o provider. A extensão privada temporária do Pi é removida em saída normal, falha de execução e SIGINT/SIGTERM; SIGKILL ou queda da máquina podem deixar o arquivo, que não contém chave.
+`launch` não grava chaves nem edita configs globais dos harnesses ou arquivos do shell. `setup claude` modifica apenas o perfil QG e guarda a chave no Chaves conforme descrito acima. `launch claude` usa um perfil temporário para não gravar escolhas no Claude oficial. Configurações de projeto e políticas gerenciadas podem interferir; confira o provider e modelo na sessão. OpenCode preserva campos existentes no JSON inline e acrescenta o provider. Os perfis temporários dos cinco harnesses são removidos em saída normal, falha de execução e SIGINT/SIGTERM. SIGKILL ou queda da máquina podem deixar o diretório: arquivos de estado produzidos pelo próprio harness podem conter dados da sessão, embora o launcher não grave a chave em sua configuração.
 
 O tráfego da sessão vai para o gateway selecionado. O instalador não usa sudo, preserva executáveis existentes e não baixa harnesses automaticamente. `QUEBRAGALHO_BIN_DIR` escolhe outro destino; se ele não estiver no PATH, o instalador avisa.
 
@@ -64,7 +68,7 @@ node --check quebragalho.mjs
 sh -n install.sh
 ```
 
-Os testes executam o instalador, o launcher instalado e cinco executáveis simulados. Mockam a consulta HTTP para não abrir sockets nem usar credenciais reais. Verificam configs, catálogo, argumentos literais, códigos de saída, sinais, limpeza e erros. O setup usa um Chaves simulado para verificar perfil separado, atalho sem exports, preservação byte a byte das configurações oficiais, backup privado, modelo padrão, reconfiguração e falhas sem vazamento de chave. Os cinco launches também preservam arquivos oficiais de configuração na suíte simulada. Não comprovam inferência, streaming ou ferramentas nos serviços reais.
+Os testes executam o instalador, o launcher instalado e cinco executáveis simulados. Mockam a consulta HTTP para não abrir sockets nem usar credenciais reais. Verificam configs, catálogo, argumentos literais, códigos de saída, sinais, limpeza e erros. O setup usa um Chaves simulado para verificar perfil separado, atalho sem exports, preservação byte a byte das configurações oficiais, backup privado, modelo padrão, reconfiguração e falhas sem vazamento de chave. Os cinco launches também verificam HOME/XDG privados, diretórios específicos, remoção de caminhos oficiais herdados e limpeza de estado, preservando arquivos oficiais byte a byte na suíte simulada. Não comprovam inferência, streaming ou ferramentas nos serviços reais.
 
 Validação real em 30/09/2026, sem expor credenciais no repositório ou nos logs:
 
@@ -81,6 +85,8 @@ Validação real em 30/09/2026, sem expor credenciais no repositório ou nos log
 - Aider e Pi: integrações verificadas por testes locais com executáveis simulados; binários não testados ao vivo.
 
 Validação da correção em 01/10/2026: `quebragalho claude -p` respondeu `OK` em perfil temporário, sem exports de gateway. O catálogo tinha 17 modelos; `~/.claude/settings.json` permaneceu byte a byte intacto, nenhuma instalação pessoal foi refeita e a credencial temporária foi removida. A suíte local passou com preservação de configurações dos cinco harnesses e do provider existente no OpenCode.
+
+Validação do isolamento ampliado em 01/10/2026: os cinco launches passaram na suíte local com HOME/XDG e caminhos específicos privados. Claude e OpenCode reais responderam `OK`; Codex iniciou no perfil privado, mas continuou recebendo HTTP 404 em Responses. Os arquivos pessoais de configuração e autenticação verificados permaneceram idênticos antes e depois. Aider e Pi continuam verificados apenas por executáveis simulados; nenhuma instalação pessoal foi refeita.
 
 O repositório distribui o installer por clone; não há pacote npm ou release. As verificações acima não comprovam todos os modelos ou todos os recursos de streaming. O installer também preserva links simbólicos com destino inexistente, com teste de regressão local.
 

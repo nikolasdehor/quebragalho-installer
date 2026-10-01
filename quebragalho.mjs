@@ -89,51 +89,66 @@ async function configuration(harness, base, model, models) {
   const env = { ...process.env };
   const key = env.QUEBRAGALHO_API_KEY;
   let args = ['--model', model];
-  let temporary;
-  switch (harness) {
-    case 'claude':
-      temporary = await mkdtemp(join(tmpdir(), 'quebragalho-claude-'));
-      env.CLAUDE_CONFIG_DIR = temporary;
-      Object.assign(env, { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key,
-        ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: model, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1' });
-      for (const name of ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) delete env[name];
-      break;
-    case 'codex': {
-      const provider = { name: 'Quebra-galho', base_url: `${base}/v1`, env_key: 'QUEBRAGALHO_API_KEY',
-        wire_api: 'responses', requires_openai_auth: false };
-      // JSON-quoted strings are also valid TOML basic strings.
-      args = ['-c', 'model_provider="quebragalho"', ...Object.entries(provider).flatMap(([name, value]) =>
-        ['-c', `model_providers.quebragalho.${name}=${JSON.stringify(value)}`]), '--model', model];
-      break;
+  const temporary = await mkdtemp(join(tmpdir(), `quebragalho-${harness}-`));
+  Object.assign(env, { HOME: temporary, XDG_CONFIG_HOME: join(temporary, 'config'),
+    XDG_DATA_HOME: join(temporary, 'data'), XDG_CACHE_HOME: join(temporary, 'cache'),
+    XDG_STATE_HOME: join(temporary, 'state') });
+  try {
+    await Promise.all(['config', 'data', 'cache', 'state'].map(name => mkdir(join(temporary, name))));
+    switch (harness) {
+      case 'claude':
+        env.CLAUDE_CONFIG_DIR = temporary;
+        Object.assign(env, { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key,
+          ANTHROPIC_API_KEY: '', ANTHROPIC_MODEL: model, CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1' });
+        for (const name of ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) delete env[name];
+        break;
+      case 'codex': {
+        env.CODEX_HOME = join(temporary, 'codex');
+        await mkdir(env.CODEX_HOME);
+        const provider = { name: 'Quebra-galho', base_url: `${base}/v1`, env_key: 'QUEBRAGALHO_API_KEY',
+          wire_api: 'responses', requires_openai_auth: false };
+        // JSON-quoted strings are also valid TOML basic strings.
+        args = ['-c', 'model_provider="quebragalho"', ...Object.entries(provider).flatMap(([name, value]) =>
+          ['-c', `model_providers.quebragalho.${name}=${JSON.stringify(value)}`]), '--model', model];
+        break;
+      }
+      case 'opencode': {
+        env.OPENCODE_CONFIG_DIR = join(temporary, 'opencode');
+        await mkdir(env.OPENCODE_CONFIG_DIR);
+        delete env.OPENCODE_CONFIG;
+        const existing = env.OPENCODE_CONFIG_CONTENT ? JSON.parse(env.OPENCODE_CONFIG_CONTENT) : {};
+        env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...existing, model: `quebragalho/${model}`,
+          provider: { ...existing.provider, quebragalho: { name: 'Quebra-galho', npm: '@ai-sdk/openai-compatible',
+            options: { baseURL: `${base}/v1`, apiKey: '{env:QUEBRAGALHO_API_KEY}' },
+            models: Object.fromEntries(models.map(id => [id, { name: id }])) } } });
+        args = ['--model', `quebragalho/${model}`];
+        break;
+      }
+      case 'aider':
+        await writeFile(join(temporary, 'aider.yml'), '{}\n');
+        await writeFile(join(temporary, '.env'), '');
+        Object.assign(env, { OPENAI_API_BASE: `${base}/v1`, OPENAI_API_KEY: key });
+        args = ['--model', `openai/${model}`, '--config', join(temporary, 'aider.yml'),
+          '--env-file', join(temporary, '.env'), '--input-history-file', join(temporary, 'input.history'),
+          '--chat-history-file', join(temporary, 'chat.history'), '--llm-history-file', join(temporary, 'llm.history')];
+        break;
+      case 'pi': {
+        env.PI_CODING_AGENT_DIR = join(temporary, 'pi');
+        await mkdir(env.PI_CODING_AGENT_DIR);
+        const extension = join(temporary, 'provider.mjs');
+        try {
+          // ponytail: conservative text-only limits; use verified gateway metadata when provided.
+          const provider = { baseUrl: `${base}/v1`, api: 'openai-completions', apiKey: '$QUEBRAGALHO_API_KEY',
+            models: models.map(id => ({ id, name: id, reasoning: false, input: ['text'],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 4096 })) };
+          await writeFile(extension, `export default function(pi) { pi.registerProvider("quebragalho", ${JSON.stringify(provider)}); }\n`, { mode: 0o600 });
+        } catch (error) { await rm(temporary, { recursive: true, force: true }); throw error; }
+        args = ['--extension', extension, '--provider', 'quebragalho', '--model', model];
+        break;
+      }
     }
-    case 'opencode': {
-      const existing = env.OPENCODE_CONFIG_CONTENT ? JSON.parse(env.OPENCODE_CONFIG_CONTENT) : {};
-      env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ...existing, model: `quebragalho/${model}`,
-        provider: { ...existing.provider, quebragalho: { name: 'Quebra-galho', npm: '@ai-sdk/openai-compatible',
-          options: { baseURL: `${base}/v1`, apiKey: '{env:QUEBRAGALHO_API_KEY}' },
-          models: Object.fromEntries(models.map(id => [id, { name: id }])) } } });
-      args = ['--model', `quebragalho/${model}`];
-      break;
-    }
-    case 'aider':
-      Object.assign(env, { OPENAI_API_BASE: `${base}/v1`, OPENAI_API_KEY: key });
-      args = ['--model', `openai/${model}`];
-      break;
-    case 'pi': {
-      temporary = await mkdtemp(join(tmpdir(), 'quebragalho-pi-'));
-      const extension = join(temporary, 'provider.mjs');
-      try {
-        // ponytail: conservative text-only limits; use verified gateway metadata when provided.
-        const provider = { baseUrl: `${base}/v1`, api: 'openai-completions', apiKey: '$QUEBRAGALHO_API_KEY',
-          models: models.map(id => ({ id, name: id, reasoning: false, input: ['text'],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 4096 })) };
-        await writeFile(extension, `export default function(pi) { pi.registerProvider("quebragalho", ${JSON.stringify(provider)}); }\n`, { mode: 0o600 });
-      } catch (error) { await rm(temporary, { recursive: true, force: true }); throw error; }
-      args = ['--extension', extension, '--provider', 'quebragalho', '--model', model];
-      break;
-    }
-  }
-  return { env, args, temporary };
+    return { env, args, temporary };
+  } catch (error) { await rm(temporary, { recursive: true, force: true }); throw error; }
 }
 
 async function main() {
